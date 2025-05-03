@@ -8,6 +8,8 @@ import gc
 import sys
 sys.path.append("./sam2")
 from sam2.build_sam import build_sam2_video_predictor
+# 导入新添加的数据集工具
+from dataset_utils import save_frame_with_annotation, create_dataset_zip, save_video_settings
 
 color = [(255, 0, 0)]
 
@@ -44,40 +46,52 @@ def main(args):
     predictor = build_sam2_video_predictor(model_cfg, args.model_path, device="cuda:0")
     frames_or_path = prepare_frames_or_path(args.video_path)
     prompts = load_txt(args.txt_path)
-
+    
+    # 创建输出目录
+    output_dir = args.output_dir
+    os.makedirs(output_dir, exist_ok=True)
+    
     frame_rate = 30
+    loaded_frames = []
+    
+    # 加载视频帧
+    if osp.isdir(args.video_path):
+        frames = sorted([osp.join(args.video_path, f) for f in os.listdir(args.video_path) if f.endswith((".jpg", ".jpeg", ".JPG", ".JPEG"))])
+        loaded_frames = [cv2.imread(frame_path) for frame_path in frames]
+        height, width = loaded_frames[0].shape[:2]
+    else:
+        cap = cv2.VideoCapture(args.video_path)
+        frame_rate = cap.get(cv2.CAP_PROP_FPS)
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            loaded_frames.append(frame)
+        cap.release()
+        height, width = loaded_frames[0].shape[:2]
+        
+        if len(loaded_frames) == 0:
+            raise ValueError("No frames were loaded from the video.")
+    
+    # 保存视频设置
+    save_video_settings(output_dir, width, height, frame_rate, len(loaded_frames))
+    
+    # 设置视频输出（如果需要）
     if args.save_to_video:
-        if osp.isdir(args.video_path):
-            frames = sorted([osp.join(args.video_path, f) for f in os.listdir(args.video_path) if f.endswith((".jpg", ".jpeg", ".JPG", ".JPEG"))])
-            loaded_frames = [cv2.imread(frame_path) for frame_path in frames]
-            height, width = loaded_frames[0].shape[:2]
-        else:
-            cap = cv2.VideoCapture(args.video_path)
-            frame_rate = cap.get(cv2.CAP_PROP_FPS)
-            loaded_frames = []
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                loaded_frames.append(frame)
-            cap.release()
-            height, width = loaded_frames[0].shape[:2]
-
-            if len(loaded_frames) == 0:
-                raise ValueError("No frames were loaded from the video.")
-
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(args.video_output_path, fourcc, frame_rate, (width, height))
-
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(args.video_output_path, fourcc, frame_rate, (width, height))
+    
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.float16):
         state = predictor.init_state(frames_or_path, offload_video_to_cpu=True)
         bbox, track_label = prompts[0]
         _, _, masks = predictor.add_new_points_or_box(state, box=bbox, frame_idx=0, obj_id=0)
-
+        
+        # 追踪视频中的物体
         for frame_idx, object_ids, masks in predictor.propagate_in_video(state):
             mask_to_vis = {}
             bbox_to_vis = {}
-
+            
+            # 处理每个对象的掩码
             for obj_id, mask in zip(object_ids, masks):
                 mask = mask[0].cpu().numpy()
                 mask = mask > 0.0
@@ -90,22 +104,48 @@ def main(args):
                     bbox = [x_min, y_min, x_max - x_min, y_max - y_min]
                 bbox_to_vis[obj_id] = bbox
                 mask_to_vis[obj_id] = mask
-
+            
+            # 获取当前帧
+            img = loaded_frames[frame_idx].copy()
+            
+            # 提取边界框列表用于标注
+            bbox_list = [bbox for obj_id, bbox in bbox_to_vis.items()]
+            
+            # 保存帧和XML标注
+            if args.generate_dataset:
+                save_frame_with_annotation(
+                    frame=img, 
+                    frame_idx=frame_idx, 
+                    output_dir=output_dir, 
+                    bbox_list=bbox_list,
+                    object_name=args.object_name
+                )
+            
+            # 可视化处理
             if args.save_to_video:
-                img = loaded_frames[frame_idx]
+                vis_img = img.copy()
+                # 绘制掩码
                 for obj_id, mask in mask_to_vis.items():
                     mask_img = np.zeros((height, width, 3), np.uint8)
                     mask_img[mask] = color[(obj_id + 1) % len(color)]
-                    img = cv2.addWeighted(img, 1, mask_img, 0.2, 0)
-
+                    vis_img = cv2.addWeighted(vis_img, 1, mask_img, 0.2, 0)
+                
+                # 绘制边界框
                 for obj_id, bbox in bbox_to_vis.items():
-                    cv2.rectangle(img, (bbox[0], bbox[1]), (bbox[0] + bbox[2], bbox[1] + bbox[3]), color[obj_id % len(color)], 2)
-
-                out.write(img)
-
+                    cv2.rectangle(vis_img, (bbox[0], bbox[1]), (bbox[0] + bbox[2], bbox[1] + bbox[3]), color[obj_id % len(color)], 2)
+                
+                out.write(vis_img)
+        
+        # 关闭视频输出
         if args.save_to_video:
             out.release()
-
+        
+        # 生成数据集ZIP文件
+        if args.generate_dataset:
+            zip_path = create_dataset_zip(output_dir, args.object_name, args.zip_output_path)
+            print(f"Dataset ZIP file created at: {zip_path}")
+    
+    # 清理资源
     del predictor, state
     gc.collect()
     torch.clear_autocast_cache()
@@ -117,6 +157,12 @@ if __name__ == "__main__":
     parser.add_argument("--txt_path", required=True, help="Path to ground truth text file.")
     parser.add_argument("--model_path", default="sam2/checkpoints/sam2.1_hiera_base_plus.pt", help="Path to the model checkpoint.")
     parser.add_argument("--video_output_path", default="demo.mp4", help="Path to save the output video.")
-    parser.add_argument("--save_to_video", default=True, help="Save results to a video.")
+    parser.add_argument("--save_to_video", action="store_true", help="Save results to a video.")
+    # 添加数据集生成相关参数
+    parser.add_argument("--generate_dataset", action="store_true", help="Generate VOC format dataset.")
+    parser.add_argument("--output_dir", default="output", help="Directory to save dataset files.")
+    parser.add_argument("--zip_output_path", default=None, help="Path to save the output ZIP file.")
+    parser.add_argument("--object_name", default="object", help="Name of the object to be annotated.")
     args = parser.parse_args()
+    
     main(args)
