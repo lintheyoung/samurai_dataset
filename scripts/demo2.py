@@ -9,7 +9,7 @@ import sys
 sys.path.append("./sam2")
 from sam2.build_sam import build_sam2_video_predictor
 # 导入新添加的数据集工具
-from dataset_utils import save_frame_with_annotation, create_dataset_zip, save_video_settings
+from dataset_utils import save_frame_with_annotation, create_dataset_zip, save_video_settings, upload_to_r2
 
 color = [(255, 0, 0)]
 
@@ -141,15 +141,41 @@ def main(args):
             out.release()
         
         # 生成数据集ZIP文件
+        zip_url = None
         if args.generate_dataset:
             zip_path = create_dataset_zip(output_dir, args.object_name, args.zip_output_path)
             print(f"Dataset ZIP file created at: {zip_path}")
+            
+            # 上传ZIP文件到Cloudflare R2
+            if args.upload_to_r2:
+                zip_url = upload_to_r2(zip_path)
+                if zip_url:
+                    print(f"Dataset ZIP file uploaded to Cloudflare R2. Download URL: {zip_url}")
+                else:
+                    print("Failed to upload ZIP file to Cloudflare R2.")
     
     # 清理资源
     del predictor, state
     gc.collect()
     torch.clear_autocast_cache()
     torch.cuda.empty_cache()
+    
+    # 返回结果
+    result = {
+        "message": "Processing completed successfully",
+    }
+    
+    if args.save_to_video:
+        result["video_output_path"] = args.video_output_path
+    
+    if args.generate_dataset:
+        result["dataset_zip_path"] = zip_path
+        
+        if zip_url:
+            result["dataset_download_url"] = zip_url
+    
+    print("Results:", result)
+    return result
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -163,6 +189,8 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", default="output", help="Directory to save dataset files.")
     parser.add_argument("--zip_output_path", default=None, help="Path to save the output ZIP file.")
     parser.add_argument("--object_name", default="object", help="Name of the object to be annotated.")
+    # 添加R2上传相关参数
+    parser.add_argument("--upload_to_r2", action="store_true", help="Upload ZIP file to Cloudflare R2.")
     args = parser.parse_args()
     
     main(args)

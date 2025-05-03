@@ -7,6 +7,9 @@ import random
 from datetime import datetime
 import shutil
 import json
+import hashlib
+# 添加R2客户端导入
+from r2client.R2Client import R2Client as r2
 
 def create_voc_annotation(filename, size, bbox_list, object_name):
     """
@@ -140,3 +143,45 @@ def save_video_settings(output_dir, width, height, fps, total_frames):
     
     with open(os.path.join(output_dir, "video_settings.json"), "w") as f:
         json.dump(video_settings, f, indent=4)
+
+# 添加上传到Cloudflare R2的函数
+def upload_to_r2(file_path):
+    """
+    将文件上传到Cloudflare R2存储并返回下载URL
+    :param file_path: 要上传的文件路径
+    :return: 下载URL或None（如果上传失败）
+    """
+    def hash_time(time_string):
+        """将时间字符串哈希处理，生成不可读的加密文件夹名称"""
+        sha256 = hashlib.sha256()
+        sha256.update(time_string.encode('utf-8'))
+        return sha256.hexdigest()
+
+    # 初始化 R2 客户端
+    client = r2(
+        access_key=os.environ.get('R2_ACCESS_KEY_ID', 'a16a270ce6ed98d1006fd9a80b6f84be'),
+        secret_key=os.environ.get('R2_SECRET_KEY_ID', 'bd631ad197ce559d4341522df5d3bdfef6137b42da4c08721d6060d34ef9078d'),
+        endpoint=f'https://{os.environ.get("R2_ACCOUNT_ID", "bf7302689d0dd0a365e5199aee2d3192")}.r2.cloudflarestorage.com'
+    )
+
+    bucket_name = os.environ.get('R2_BUCKET_NAME', 'dedemaker')
+    base_folder_name = '3DA9EE71FB0F305B'  # 指定的顶级文件夹名称
+
+    # 获取当前时间，并格式化为每小时的时间字符串
+    current_time = datetime.now().strftime('%Y-%m-%d-%H')
+    
+    # 使用内部函数将时间加密为文件夹名称
+    encrypted_folder = hash_time(current_time)
+
+    file_name = os.path.basename(file_path)  # 获取文件名称
+    r2_file_key = f"{base_folder_name}/{encrypted_folder}/{file_name}"  # 在指定的加密文件夹下存储文件
+
+    # 上传文件到 R2
+    try:
+        client.upload_file(bucket_name, file_path, r2_file_key)
+        print(f"File uploaded successfully to R2 at path: {r2_file_key}")
+        # 返回自定义的下载 URL
+        return f"https://pub-6c1e280a27614b05891bfd818585735e.r2.dev/{base_folder_name}/{encrypted_folder}/{file_name}"
+    except Exception as e:
+        print(f"Error occurred during file upload: {str(e)}")
+        return None

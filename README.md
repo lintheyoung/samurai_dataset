@@ -149,3 +149,60 @@ Please consider citing our paper and the wonderful `SAM 2` if you found our work
   url={https://arxiv.org/abs/2411.11922}, 
 }
 ```
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+d-----          2025/5/3      9:23                assets
+d-----          2025/5/3      9:23                data
+d-----          2025/5/3      9:23                lib
+d-----          2025/5/3      9:23                sam2
+d-----          2025/5/3     10:25                scripts
+-a----          2025/5/3      9:23           3042 .gitignore
+-a----          2025/5/3      9:23          11558 LICENSE
+-a----          2025/5/3     16:43           8762 README.md
+
+
+(base) PS C:\Users\DerekLin\Documents\samurai> cd .\sam2\
+(base) PS C:\Users\DerekLin\Documents\samurai\sam2> ls
+
+
+    目录: C:\Users\DerekLin\Documents\samurai\sam2
+
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+d-----          2025/5/3      9:23                .github
+d-----          2025/5/3      9:23                assets
+d-----          2025/5/3      9:23                checkpoints
+d-----          2025/5/3      9:23                demo
+d-----          2025/5/3      9:23                sam2
+d-----          2025/5/3      9:23                sav_dataset
+d-----          2025/5/3      9:23                tools
+d-----          2025/5/3      9:23                training
+-a----          2025/5/3      9:23           2629 .clang-format
+-a----          2025/5/3      9:23            114 .gitignore
+-a----          2025/5/3      9:23              2 .watchmanconfig
+-a----          2025/5/3      9:23           2133 backend.Dockerfile
+-a----          2025/5/3      9:23           3621 CODE_OF_CONDUCT.md
+-a----          2025/5/3      9:23           1456 CONTRIBUTING.md
+-a----          2025/5/3      9:23           1137 docker-compose.yaml
+-a----          2025/5/3      9:23          10772 INSTALL.md
+-a----          2025/5/3      9:23          11558 LICENSE
+-a----          2025/5/3      9:23           1595 LICENSE_cctorch
+-a----          2025/5/3      9:23            261 MANIFEST.in
+-a----          2025/5/3      9:23            126 pyproject.toml
+-a----          2025/5/3      9:23          15664 README.md
+-a----          2025/5/3      9:23           5225 setup.py
+
+
+git clone https://github.com/yangchris11/samurai
+cd samurai
+cd sam2
+pip install -e .
+pip install matplotlib==3.7 tikzplotlib jpeg4py opencv-python lmdb pandas scipy loguru
+cd checkpoints && \
+./download_ckpts.sh && \
+cd ..
+
+实际使用命令
+python scripts/demo.py --video_path demo003.mp4 --txt_path box003.txt --generate_dataset --object_name "car"
