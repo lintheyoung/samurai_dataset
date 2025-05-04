@@ -10,6 +10,9 @@ import json
 import hashlib
 # 添加R2客户端导入
 from r2client.R2Client import R2Client as r2
+# 添加线程支持
+import concurrent.futures
+import threading
 
 def create_voc_annotation(filename, size, bbox_list, object_name):
     """
@@ -144,7 +147,7 @@ def save_video_settings(output_dir, width, height, fps, total_frames):
     with open(os.path.join(output_dir, "video_settings.json"), "w") as f:
         json.dump(video_settings, f, indent=4)
 
-# 添加上传到Cloudflare R2的函数
+# 修复后的上传到Cloudflare R2的函数
 def upload_to_r2(file_path):
     """
     将文件上传到Cloudflare R2存储并返回下载URL
@@ -178,10 +181,47 @@ def upload_to_r2(file_path):
 
     # 上传文件到 R2
     try:
+        # 将文件上传至 R2 存储桶中
         client.upload_file(bucket_name, file_path, r2_file_key)
-        print(f"File uploaded successfully to R2 at path: {r2_file_key}")
+        print(f"文件成功上传到 R2 路径: {r2_file_key}")
+        
         # 返回自定义的下载 URL
         return f"https://pub-6c1e280a27614b05891bfd818585735e.r2.dev/{base_folder_name}/{encrypted_folder}/{file_name}"
     except Exception as e:
-        print(f"Error occurred during file upload: {str(e)}")
+        print(f"文件上传过程中发生错误: {str(e)}")
         return None
+
+# 添加并行上传功能
+def parallel_upload_to_r2(files_dict):
+    """
+    并行上传多个文件到Cloudflare R2存储
+    :param files_dict: 字典，键为文件标识符，值为文件路径
+    :return: 字典，键为文件标识符，值为下载URL
+    """
+    result_urls = {}
+    
+    def upload_file_task(file_id, file_path):
+        """上传单个文件的任务函数"""
+        url = upload_to_r2(file_path)
+        return file_id, url
+    
+    # 使用线程池并行上传文件
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(files_dict), 5)) as executor:
+        future_to_file = {
+            executor.submit(upload_file_task, file_id, file_path): (file_id, file_path)
+            for file_id, file_path in files_dict.items()
+        }
+        
+        for future in concurrent.futures.as_completed(future_to_file):
+            file_id, file_path = future_to_file[future]
+            try:
+                file_id, url = future.result()
+                if url:
+                    result_urls[file_id] = url
+                    print(f"文件 '{file_id}' 成功上传，下载链接: {url}")
+                else:
+                    print(f"文件 '{file_id}' 上传失败")
+            except Exception as e:
+                print(f"上传文件 '{file_id}' 时发生错误: {str(e)}")
+    
+    return result_urls

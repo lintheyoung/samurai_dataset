@@ -12,8 +12,8 @@ import shutil
 from urllib.parse import urlparse
 sys.path.append("./sam2")
 from sam2.build_sam import build_sam2_video_predictor
-# 导入数据集工具
-from dataset_utils import save_frame_with_annotation, create_dataset_zip, save_video_settings, upload_to_r2
+# 导入修改后的数据集工具
+from dataset_utils import save_frame_with_annotation, create_dataset_zip, save_video_settings, upload_to_r2, parallel_upload_to_r2
 
 color = [(255, 0, 0)]
 
@@ -92,6 +92,44 @@ def prepare_frames_or_path(video_path):
     else:
         raise ValueError("无效的视频路径格式。应为.mp4文件或图像帧目录。")
 
+# 添加视频转换函数，使视频在网页端可播放
+def convert_video_for_web(input_path):
+    """
+    转换视频格式，确保在web上可以播放
+    """
+    try:
+        # 创建临时文件路径
+        output_dir = os.path.dirname(input_path)
+        base_name = os.path.splitext(os.path.basename(input_path))[0]
+        web_output_path = os.path.join(output_dir, f"{base_name}_web.mp4")
+        
+        # 尝试使用FFmpeg进行转换（如果安装了FFmpeg）
+        try:
+            import subprocess
+            print(f"尝试使用FFmpeg转换视频为web格式...")
+            cmd = [
+                'ffmpeg', '-i', input_path,
+                '-c:v', 'libx264', '-preset', 'fast',
+                '-profile:v', 'baseline', '-level', '3.0',
+                '-pix_fmt', 'yuv420p',
+                '-movflags', '+faststart',
+                '-y', web_output_path
+            ]
+            
+            process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if process.returncode == 0:
+                print(f"视频已成功转换为Web兼容格式: {web_output_path}")
+                return web_output_path
+            else:
+                print(f"FFmpeg转换失败: {process.stderr.decode('utf-8')}")
+                return input_path
+        except (ImportError, FileNotFoundError):
+            print("未安装FFmpeg或无法找到FFmpeg，跳过转换步骤")
+            return input_path
+    except Exception as e:
+        print(f"视频转换过程中发生错误: {str(e)}")
+        return input_path
+
 def main(args):
     # 如果提供了视频URL，下载视频
     if args.video.startswith("http"):
@@ -140,10 +178,39 @@ def main(args):
         # 保存视频设置
         save_video_settings(output_dir, width, height, frame_rate, len(loaded_frames))
         
-        # 设置视频输出（如果需要）
-        if args.save_to_video:
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(args.video_output_path, fourcc, frame_rate, (width, height))
+        # 设置视频输出
+        video_output_path = args.video_output_path
+        if args.save_to_video or args.upload_to_r2:
+            # 尝试多种不同的编码器
+            codecs_to_try = [
+                ('mp4v', 'MPEG-4 编码器'),
+                ('XVID', 'XVID 编码器'),
+                ('MJPG', 'Motion JPEG 编码器'),
+                ('H264', 'H.264 编码器')
+            ]
+            
+            out = None
+            for codec, codec_name in codecs_to_try:
+                try:
+                    fourcc = cv2.VideoWriter_fourcc(*codec)
+                    out = cv2.VideoWriter(video_output_path, fourcc, frame_rate, (width, height))
+                    
+                    if out.isOpened():
+                        print(f"成功使用 {codec_name} 创建视频输出")
+                        break
+                    else:
+                        out.release()
+                        print(f"无法使用 {codec_name} 创建视频")
+                except Exception as e:
+                    print(f"尝试使用 {codec_name} 时出错: {str(e)}")
+            
+            if out is None or not out.isOpened():
+                print("警告: 无法创建视频输出，尝试使用最基本的编码器")
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 最基本的编码器
+                out = cv2.VideoWriter(video_output_path, fourcc, frame_rate, (width, height))
+                
+                if not out.isOpened():
+                    raise ValueError("无法创建视频输出，请检查OpenCV安装和编码器支持")
         
         with torch.inference_mode(), torch.autocast("cuda", dtype=torch.float16):
             state = predictor.init_state(frames_or_path, offload_video_to_cpu=True)
@@ -186,7 +253,7 @@ def main(args):
                     )
                 
                 # 可视化处理
-                if args.save_to_video:
+                if args.save_to_video or args.upload_to_r2:
                     vis_img = img.copy()
                     # 绘制掩码
                     for obj_id, mask in mask_to_vis.items():
@@ -201,22 +268,32 @@ def main(args):
                     out.write(vis_img)
             
             # 关闭视频输出
-            if args.save_to_video:
+            if args.save_to_video or args.upload_to_r2:
                 out.release()
+        
+        # 准备上传文件
+        files_to_upload = {}
+        zip_path = None
+        
+        # 创建数据集ZIP文件
+        if args.generate_dataset:
+            zip_path = create_dataset_zip(output_dir, args.object_name, args.zip_output_path)
+            print(f"数据集ZIP文件已创建在: {zip_path}")
             
-            # 生成数据集ZIP文件
-            zip_url = None
-            if args.generate_dataset:
-                zip_path = create_dataset_zip(output_dir, args.object_name, args.zip_output_path)
-                print(f"数据集ZIP文件已创建在: {zip_path}")
-                
-                # 上传ZIP文件到Cloudflare R2
-                if args.upload_to_r2:
-                    zip_url = upload_to_r2(zip_path)
-                    if zip_url:
-                        print(f"数据集ZIP文件已上传到Cloudflare R2。下载URL: {zip_url}")
-                    else:
-                        print("上传ZIP文件到Cloudflare R2失败。")
+            if args.upload_to_r2:
+                files_to_upload['dataset'] = zip_path
+        
+        # 添加视频输出到上传列表
+        if args.upload_to_r2 and os.path.exists(video_output_path):
+            # 尝试转换视频为Web兼容格式
+            web_video_path = convert_video_for_web(video_output_path)
+            files_to_upload['video'] = web_video_path
+        
+        # 并行上传文件到R2
+        urls = {}
+        if files_to_upload and args.upload_to_r2:
+            print("开始并行上传文件到R2...")
+            urls = parallel_upload_to_r2(files_to_upload)
         
         # 清理资源
         del predictor, state
@@ -230,13 +307,17 @@ def main(args):
         }
         
         if args.save_to_video:
-            result["video_output_path"] = args.video_output_path
+            result["video_output_path"] = video_output_path
         
         if args.generate_dataset:
             result["dataset_zip_path"] = zip_path
-            
-            if zip_url:
-                result["dataset_download_url"] = zip_url
+        
+        # 添加R2链接到结果
+        if urls:
+            if 'dataset' in urls:
+                result["dataset_download_url"] = urls['dataset']
+            if 'video' in urls:
+                result["video_download_url"] = urls['video']
         
         print("结果:", result)
         return result
@@ -261,7 +342,7 @@ if __name__ == "__main__":
     parser.add_argument("--zip_output_path", default=None, help="输出ZIP文件的保存路径。")
     parser.add_argument("--object_name", default="object", help="要标注的对象名称。")
     # 添加R2上传相关参数
-    parser.add_argument("--upload_to_r2", action="store_true", help="将ZIP文件上传到Cloudflare R2。")
+    parser.add_argument("--upload_to_r2", action="store_true", help="将ZIP文件和视频上传到Cloudflare R2。")
     args = parser.parse_args()
     
     main(args)
