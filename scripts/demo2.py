@@ -344,5 +344,22 @@ if __name__ == "__main__":
     # 添加R2上传相关参数
     parser.add_argument("--upload_to_r2", action="store_true", help="将ZIP文件和视频上传到Cloudflare R2。")
     args = parser.parse_args()
+
+    # 修改视频输出路径，添加随机UUID
+    if args.save_to_video or args.upload_to_r2:
+        # 获取文件名和扩展名
+        file_dir = os.path.dirname(args.video_output_path)
+        file_name = os.path.basename(args.video_output_path)
+        name_parts = os.path.splitext(file_name)
+        
+        # 生成随机UUID（取前8位即可）
+        random_uuid = str(uuid.uuid4())[:8]
+        
+        # 组合新的文件名
+        new_file_name = f"{name_parts[0]}_{random_uuid}{name_parts[1]}"
+        
+        # 更新输出路径
+        args.video_output_path = os.path.join(file_dir, new_file_name)
+        print(f"视频将保存为: {args.video_output_path}")
     
     main(args)
