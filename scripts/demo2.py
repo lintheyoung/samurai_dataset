@@ -229,14 +229,14 @@ def main(args):
                     mask = mask[0].cpu().numpy()
                     mask = mask > 0.0
                     non_zero_indices = np.argwhere(mask)
-                    if len(non_zero_indices) == 0:
-                        bbox = [0, 0, 0, 0]
-                    else:
+                    
+                    # 关键修改：只有在有非零像素时才添加边界框和掩码
+                    if len(non_zero_indices) > 0:  # 只在有物体时处理
                         y_min, x_min = non_zero_indices.min(axis=0).tolist()
                         y_max, x_max = non_zero_indices.max(axis=0).tolist()
                         bbox = [x_min, y_min, x_max - x_min, y_max - y_min]
-                    bbox_to_vis[obj_id] = bbox
-                    mask_to_vis[obj_id] = mask
+                        bbox_to_vis[obj_id] = bbox
+                        mask_to_vis[obj_id] = mask
                 
                 # 获取当前帧
                 img = loaded_frames[frame_idx].copy()
