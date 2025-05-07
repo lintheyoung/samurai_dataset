@@ -12,6 +12,8 @@ import shutil
 from urllib.parse import urlparse
 sys.path.append("./sam2")
 from sam2.build_sam import build_sam2_video_predictor
+# 在文件开头添加导入
+import uuid
 # 导入修改后的数据集工具
 from dataset_utils import save_frame_with_annotation, create_dataset_zip, save_video_settings, upload_to_r2, parallel_upload_to_r2
 
