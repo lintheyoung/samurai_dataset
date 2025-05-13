@@ -1,3 +1,4 @@
+# 导入部分：在文件前部添加导入语句
 import argparse
 import os
 import os.path as osp
@@ -16,6 +17,9 @@ from sam2.build_sam import build_sam2_video_predictor
 import uuid
 # 导入修改后的数据集工具
 from dataset_utils import save_frame_with_annotation, create_dataset_zip, save_video_settings, upload_to_r2, parallel_upload_to_r2
+# 导入视频处理工具
+from video_utils import process_video
+
 
 color = [(255, 0, 0)]
 
@@ -132,6 +136,7 @@ def convert_video_for_web(input_path):
         print(f"视频转换过程中发生错误: {str(e)}")
         return input_path
 
+# 主函数修改部分
 def main(args):
     # 如果提供了视频URL，下载视频
     if args.video.startswith("http"):
@@ -144,6 +149,29 @@ def main(args):
         temp_dir = None
     
     try:
+        # 如果启用了视频预处理
+        if args.preprocess_video:
+            print(f"开始预处理视频: 将分辨率降至{args.resolution}, 目标帧率: {args.target_fps if args.target_fps else '保持原帧率'}, 抽帧间隔: {args.frame_skip}")
+            
+            # 创建预处理视频的输出路径
+            preprocessed_video_dir = os.path.join(os.path.dirname(args.output_dir), "preprocessed")
+            os.makedirs(preprocessed_video_dir, exist_ok=True)
+            
+            # 生成随机UUID作为文件名一部分
+            random_uuid = str(uuid.uuid4())[:8]
+            preprocessed_video_path = os.path.join(preprocessed_video_dir, f"preprocessed_{random_uuid}.mp4")
+            
+            # 调用预处理函数
+            # 调用预处理函数
+            video_path, frame_rate, width, height = process_video(
+                input_video_path=video_path,
+                output_video_path=preprocessed_video_path,
+                resolution=args.resolution,
+                target_fps=args.target_fps,
+                frame_skip=args.frame_skip
+            )
+            print(f"视频预处理完成，保存到: {video_path}")
+
         model_cfg = determine_model_cfg(args.model_path)
         predictor = build_sam2_video_predictor(model_cfg, args.model_path, device="cuda:0")
         frames_or_path = prepare_frames_or_path(video_path)
@@ -345,6 +373,14 @@ if __name__ == "__main__":
     parser.add_argument("--object_name", default="object", help="要标注的对象名称。")
     # 添加R2上传相关参数
     parser.add_argument("--upload_to_r2", action="store_true", help="将ZIP文件和视频上传到Cloudflare R2。")
+    
+    # 添加视频预处理相关参数
+    # 视频预处理相关参数
+    parser.add_argument("--preprocess_video", action="store_true", help="启用视频预处理（降低分辨率和抽帧）")
+    parser.add_argument("--resolution", default="720P", choices=["480P", "720P", "1080P"], help="目标视频分辨率")
+    parser.add_argument("--target_fps", type=float, default=None, help="目标视频帧率，如10fps")
+    parser.add_argument("--frame_skip", type=int, default=None, help="抽帧间隔，每N帧保留一帧（当不设置target_fps时使用）")
+    
     args = parser.parse_args()
 
     # 修改视频输出路径，添加随机UUID
