@@ -22,6 +22,8 @@ import re
 from dataset_utils import save_frame_with_annotation, create_dataset_zip, save_video_settings, upload_to_r2, parallel_upload_to_r2
 # 导入视频处理工具
 from video_utils import process_video
+# 导入数据集合并工具
+from dataset_merge import merge_voc_datasets, zip_merged_dataset
 
 
 color = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255), (0, 255, 255)]
@@ -418,6 +420,35 @@ def main(args):
                 if current_zip_path:
                     print(f"边界框 #{bbox_idx+1} ({object_name}) 的数据集ZIP文件已创建在: {current_zip_path}")
                     dataset_zip_paths.append(current_zip_path)
+                    
+        # 合并数据集（如果启用）
+        merged_dataset_zip_path = None
+        if args.merge_datasets and args.generate_dataset and len(dataset_dirs) > 1:
+            print("\n开始合并数据集...")
+            
+            # 设置合并数据集的输出目录
+            merged_output_dir = args.merged_output_dir if args.merged_output_dir else os.path.join(args.output_dir, "merged_output")
+            os.makedirs(merged_output_dir, exist_ok=True)
+            
+            # 合并数据集
+            merged_path = merge_voc_datasets(args.output_dir, args.merged_tag, merged_output_dir)
+            
+            if merged_path:
+                # 设置合并数据集的ZIP输出路径
+                if args.merged_zip_output:
+                    merged_zip_path = args.merged_zip_output
+                else:
+                    merged_zip_dir = os.path.dirname(args.output_dir)
+                    merged_zip_name = f"merged_dataset_{base_random_uuid}.zip"
+                    merged_zip_path = os.path.join(merged_zip_dir, merged_zip_name)
+                
+                # 打包合并数据集
+                merged_dataset_zip_path = zip_merged_dataset(merged_path, merged_zip_path)
+                
+                if merged_dataset_zip_path:
+                    print(f"合并数据集ZIP文件已创建在: {merged_dataset_zip_path}")
+            else:
+                print("警告: 数据集合并失败，将使用原始数据集ZIP文件")
         
         # 生成最终的视频，包含所有bbox
         if args.save_to_video or args.upload_to_r2:
@@ -466,9 +497,9 @@ def main(args):
             out.release()
             print(f"最终视频已生成: {final_video_output_path}")
         
-        # 创建所有数据集的合并ZIP
+        # 创建所有数据集的合并ZIP (只在没有启用merge_datasets时创建)
         all_datasets_zip_path = None
-        if dataset_zip_paths and args.generate_dataset:
+        if dataset_zip_paths and args.generate_dataset and not args.merge_datasets:
             all_datasets_zip_dir = os.path.dirname(args.output_dir)
             all_datasets_zip_name = f"all_datasets_{base_random_uuid}.zip"
             all_datasets_zip_path = os.path.join(all_datasets_zip_dir, all_datasets_zip_name)
@@ -491,8 +522,16 @@ def main(args):
             files_to_upload['final_video'] = web_video_path
         
         # 添加数据集ZIP到上传列表
-        if args.upload_to_r2 and all_datasets_zip_path:
-            files_to_upload['all_datasets'] = all_datasets_zip_path
+        # 如果启用了数据集合并并且合并成功，则仅上传合并后的数据集，否则上传所有数据集的打包文件
+        if args.upload_to_r2:
+            if args.merge_datasets and merged_dataset_zip_path:
+                # 仅上传合并后的数据集
+                files_to_upload['dataset'] = merged_dataset_zip_path
+                print("仅上传合并后的数据集到R2")
+            elif all_datasets_zip_path:
+                # 上传所有数据集的打包文件（合并失败或未启用合并功能）
+                files_to_upload['dataset'] = all_datasets_zip_path
+                print("上传所有原始数据集的打包文件到R2")
         
         # 并行上传文件到R2
         urls = {}
@@ -503,17 +542,27 @@ def main(args):
         # 最终结果
         final_result = {
             "message": f"成功处理了 {len(bbox_params_list)} 个边界框并生成了包含所有边界框的单个视频",
-            "video_output_path": final_video_output_path if args.save_to_video or args.upload_to_r2 else None,
-            "all_datasets_zip_path": all_datasets_zip_path
+            "video_output_path": final_video_output_path if args.save_to_video or args.upload_to_r2 else None
         }
+        
+        # 添加数据集路径到结果
+        if args.merge_datasets and merged_dataset_zip_path:
+            final_result["merged_dataset_zip_path"] = merged_dataset_zip_path
+        elif all_datasets_zip_path:
+            final_result["all_datasets_zip_path"] = all_datasets_zip_path
         
         # 添加R2链接到结果
         if urls:
             final_result["upload_urls"] = urls
             
-            # 为了兼容原有代码，添加以下字段
-            if 'all_datasets' in urls:
-                final_result["dataset_download_url"] = urls['all_datasets']
+            # 添加数据集下载链接
+            if 'dataset' in urls:
+                if args.merge_datasets:
+                    final_result["merged_dataset_download_url"] = urls['dataset']
+                else:
+                    final_result["dataset_download_url"] = urls['dataset']
+                
+            # 添加视频下载链接
             if 'final_video' in urls:
                 final_result["video_download_url"] = urls['final_video']
         
@@ -547,6 +596,12 @@ if __name__ == "__main__":
     parser.add_argument("--resolution", default="720P", choices=["480P", "720P", "1080P"], help="目标视频分辨率")
     parser.add_argument("--target_fps", type=float, default=None, help="目标视频帧率，如10fps")
     parser.add_argument("--frame_skip", type=int, default=None, help="抽帧间隔，每N帧保留一帧（当不设置target_fps时使用）")
+    
+    # 添加数据集合并相关参数
+    parser.add_argument("--merge_datasets", action="store_true", help="合并生成的多个数据集，并且仅上传合并后的数据集")
+    parser.add_argument("--merged_tag", default="merged", help="合并数据集的自定义标签")
+    parser.add_argument("--merged_output_dir", default=None, help="合并数据集的输出目录，默认使用output_dir")
+    parser.add_argument("--merged_zip_output", default=None, help="合并数据集的ZIP输出路径")
     
     args = parser.parse_args()
     
