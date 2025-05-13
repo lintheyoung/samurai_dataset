@@ -18,6 +18,9 @@ from sam2.build_sam import build_sam2_video_predictor
 # 在文件开头添加导入
 import uuid
 import re
+import random
+import time
+from xml.etree import ElementTree
 # 导入修改后的数据集工具
 from dataset_utils import save_frame_with_annotation, create_dataset_zip, save_video_settings, upload_to_r2, parallel_upload_to_r2
 # 导入视频处理工具
@@ -177,6 +180,317 @@ def create_multiple_files_zip(files_dict, output_path):
         return output_path
     except Exception as e:
         print(f"创建ZIP文件时出错: {str(e)}")
+        return None
+
+# 添加用于递归查找特定类型文件的辅助函数
+def find_files_recursive(directory, file_extension):
+    """
+    递归查找指定目录下所有特定扩展名的文件
+    :param directory: 目录路径
+    :param file_extension: 文件扩展名（如 '.xml'）
+    :return: 找到的文件路径列表
+    """
+    result = []
+    try:
+        for root, dirs, files in os.walk(directory):
+            for file in files:
+                if file.lower().endswith(file_extension.lower()):
+                    result.append(os.path.join(root, file))
+    except Exception as e:
+        print(f"递归查找文件时出错: {str(e)}")
+    return result
+
+# 打印目录结构的辅助函数
+def print_directory_structure(directory, indent=0):
+    """
+    打印目录结构，便于调试
+    :param directory: 要打印的目录
+    :param indent: 缩进级别
+    """
+    try:
+        print('  ' * indent + '+--' + os.path.basename(directory) + '/')
+        for item in os.listdir(directory):
+            item_path = os.path.join(directory, item)
+            if os.path.isdir(item_path):
+                print_directory_structure(item_path, indent + 1)
+            else:
+                print('  ' * (indent + 1) + '+--' + item)
+    except Exception as e:
+        print(f"{'  ' * indent}无法访问目录 {directory}: {str(e)}")
+
+# 打印ZIP文件内容的辅助函数
+def print_zip_contents(zip_path):
+    """
+    打印ZIP文件中的内容列表，便于调试
+    :param zip_path: ZIP文件路径
+    """
+    try:
+        if not os.path.exists(zip_path):
+            print(f"ZIP文件不存在: {zip_path}")
+            return
+        
+        print(f"ZIP文件大小: {os.path.getsize(zip_path) / (1024*1024):.2f} MB")
+        print(f"ZIP文件内容列表: {zip_path}")
+        
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            for file_info in zip_ref.infolist():
+                print(f"  {file_info.filename} (大小: {file_info.file_size} 字节)")
+    except Exception as e:
+        print(f"打印ZIP文件内容时出错: {str(e)}")
+
+# 添加VOC到YOLO转换功能，修改以支持不同的目录结构
+def convert_voc_to_yolo(voc_dataset_path, output_yolo_path, zip_output_path=None):
+    """
+    将VOC格式数据集转换为YOLO格式，支持不同的目录结构
+    :param voc_dataset_path: VOC数据集路径
+    :param output_yolo_path: YOLO输出路径
+    :param zip_output_path: YOLO ZIP文件输出路径（可选）
+    :return: YOLO数据集ZIP文件路径
+    """
+    try:
+        print(f"开始将VOC数据集转换为YOLO格式...")
+        print(f"VOC数据集路径: {voc_dataset_path}")
+        
+        # 打印输入目录结构
+        print(f"VOC数据集目录结构:")
+        print_directory_structure(voc_dataset_path)
+        
+        # 创建YOLO数据集目录
+        os.makedirs(output_yolo_path, exist_ok=True)
+        images_dir = os.path.join(output_yolo_path, "images")
+        labels_dir = os.path.join(output_yolo_path, "labels")
+        os.makedirs(images_dir, exist_ok=True)
+        os.makedirs(labels_dir, exist_ok=True)
+        
+        # 递归查找所有XML文件
+        all_xml_files = find_files_recursive(voc_dataset_path, '.xml')
+        print(f"递归查找到 {len(all_xml_files)} 个XML文件")
+        
+        if not all_xml_files:
+            print(f"错误：在 {voc_dataset_path} 及其子目录中未找到任何XML文件")
+            return None
+        
+        # 尝试找出包含大多数XML文件的目录作为注释目录
+        xml_dirs = {}
+        for xml_path in all_xml_files:
+            xml_dir = os.path.dirname(xml_path)
+            xml_dirs[xml_dir] = xml_dirs.get(xml_dir, 0) + 1
+        
+        # 按文件数量排序目录
+        sorted_xml_dirs = sorted(xml_dirs.items(), key=lambda x: x[1], reverse=True)
+        annotations_dir = sorted_xml_dirs[0][0]
+        print(f"选择的注释目录: {annotations_dir}，包含 {sorted_xml_dirs[0][1]} 个XML文件")
+        
+        # 递归查找所有图像文件
+        all_image_files = []
+        for ext in ['.jpg', '.jpeg', '.png', '.bmp']:
+            all_image_files.extend(find_files_recursive(voc_dataset_path, ext))
+        print(f"递归查找到 {len(all_image_files)} 个图像文件")
+        
+        if not all_image_files:
+            print(f"错误：在 {voc_dataset_path} 及其子目录中未找到任何图像文件")
+            return None
+        
+        # 尝试找出包含大多数图像文件的目录作为图像目录
+        img_dirs = {}
+        for img_path in all_image_files:
+            img_dir = os.path.dirname(img_path)
+            img_dirs[img_dir] = img_dirs.get(img_dir, 0) + 1
+        
+        # 按文件数量排序目录
+        sorted_img_dirs = sorted(img_dirs.items(), key=lambda x: x[1], reverse=True)
+        jpegimages_dir = sorted_img_dirs[0][0]
+        print(f"选择的图像目录: {jpegimages_dir}，包含 {sorted_img_dirs[0][1]} 个图像文件")
+        
+        # 创建文件名到路径的映射，以便快速查找
+        image_file_map = {}
+        for img_path in all_image_files:
+            base_name = os.path.splitext(os.path.basename(img_path))[0]
+            image_file_map[base_name] = img_path
+        
+        # 获取XML文件列表
+        xml_files = [os.path.basename(f) for f in find_files_recursive(annotations_dir, '.xml')]
+        
+        if not xml_files:
+            print(f"警告：在 {annotations_dir} 中未找到XML文件")
+            return None
+        
+        print(f"找到 {len(xml_files)} 个XML文件进行处理")
+        
+        # 收集所有类别名称
+        class_names = set()
+        for xml_file in xml_files:
+            xml_path = os.path.join(annotations_dir, xml_file)
+            try:
+                tree = ElementTree.parse(xml_path)
+                root = tree.getroot()
+                for obj in root.findall('.//object'):
+                    name = obj.find('name').text
+                    class_names.add(name)
+            except Exception as e:
+                print(f"解析 {xml_file} 时出错: {str(e)}")
+        
+        # 对类别名称排序以保持一致性
+        class_names = sorted(list(class_names))
+        print(f"找到以下类别: {class_names}")
+        
+        # 创建YOLO格式所需的names文件
+        with open(os.path.join(output_yolo_path, "classes.names"), "w") as f:
+            for name in class_names:
+                f.write(f"{name}\n")
+                
+        # 创建数据配置文件
+        with open(os.path.join(output_yolo_path, "data.yaml"), "w") as f:
+            f.write(f"train: ./train.txt\n")
+            f.write(f"val: ./val.txt\n")
+            f.write(f"nc: {len(class_names)}\n")
+            f.write(f"names: {class_names}\n")
+        
+        # 开始转换
+        converted_count = 0
+        failed_count = 0
+        for xml_file in xml_files:
+            try:
+                base_name = os.path.splitext(xml_file)[0]
+                
+                # 查找对应的图像文件
+                img_path = image_file_map.get(base_name)
+                
+                if not img_path:
+                    # 尝试其他可能的匹配
+                    potential_matches = [k for k in image_file_map.keys() if k.startswith(base_name) or base_name.startswith(k)]
+                    if potential_matches:
+                        img_path = image_file_map[potential_matches[0]]
+                        print(f"找到近似匹配: {base_name} -> {potential_matches[0]}")
+                    else:
+                        print(f"警告：找不到与 {xml_file} 对应的图像文件")
+                        failed_count += 1
+                        continue
+                
+                # 复制图像文件
+                dest_img_path = os.path.join(images_dir, os.path.basename(img_path))
+                shutil.copy2(img_path, dest_img_path)
+                
+                # 解析XML文件
+                xml_path = os.path.join(annotations_dir, xml_file)
+                tree = ElementTree.parse(xml_path)
+                root = tree.getroot()
+                
+                # 获取图像尺寸
+                size_elem = root.find('.//size')
+                if size_elem is not None:
+                    width = int(size_elem.find('width').text)
+                    height = int(size_elem.find('height').text)
+                else:
+                    # 如果XML中没有尺寸信息，从图像文件中获取
+                    img = cv2.imread(img_path)
+                    height, width = img.shape[:2]
+                
+                # 创建YOLO格式标注文件
+                yolo_txt_path = os.path.join(labels_dir, base_name + ".txt")
+                
+                with open(yolo_txt_path, "w") as yolo_file:
+                    objects_processed = 0
+                    for obj in root.findall('.//object'):
+                        try:
+                            name = obj.find('name').text
+                            class_id = class_names.index(name)
+                            
+                            bbox = obj.find('bndbox')
+                            xmin = float(bbox.find('xmin').text)
+                            ymin = float(bbox.find('ymin').text)
+                            xmax = float(bbox.find('xmax').text)
+                            ymax = float(bbox.find('ymax').text)
+                            
+                            # 转换为YOLO格式（中心点坐标和宽高，归一化为0-1）
+                            x_center = (xmin + xmax) / 2.0 / width
+                            y_center = (ymin + ymax) / 2.0 / height
+                            w = (xmax - xmin) / width
+                            h = (ymax - ymin) / height
+                            
+                            # 限制值在0-1范围内
+                            x_center = max(0, min(1, x_center))
+                            y_center = max(0, min(1, y_center))
+                            w = max(0, min(1, w))
+                            h = max(0, min(1, h))
+                            
+                            # 写入YOLO格式
+                            yolo_file.write(f"{class_id} {x_center:.6f} {y_center:.6f} {w:.6f} {h:.6f}\n")
+                            objects_processed += 1
+                        except Exception as e:
+                            print(f"处理 {xml_file} 中的对象时出错: {str(e)}")
+                    
+                    if objects_processed == 0:
+                        print(f"警告: {xml_file} 中没有处理任何对象")
+                
+                converted_count += 1
+                if converted_count % 50 == 0 or converted_count == len(xml_files):
+                    print(f"已处理 {converted_count}/{len(xml_files)} 个文件")
+            except Exception as e:
+                print(f"转换 {xml_file} 时出错: {str(e)}")
+                failed_count += 1
+        
+        print(f"转换完成: 成功 {converted_count}/{len(xml_files)} 个文件, 失败 {failed_count} 个文件")
+        
+        # 创建训练集和验证集列表
+        all_images = []
+        for f in os.listdir(images_dir):
+            if any(f.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".bmp"]):
+                all_images.append(os.path.splitext(f)[0])
+        
+        if not all_images:
+            print(f"警告: 未找到任何图像文件在 {images_dir} 中")
+            return None
+        
+        # 随机分割训练集和验证集
+        random.shuffle(all_images)
+        val_count = max(1, int(len(all_images) * 0.2))  # 20%作为验证集
+        val_set = all_images[:val_count]
+        train_set = all_images[val_count:]
+        
+        print(f"划分数据集: 训练集 {len(train_set)} 个样本, 验证集 {len(val_set)} 个样本")
+        
+        # 获取图像文件的扩展名
+        image_extensions = {}
+        for img_file in os.listdir(images_dir):
+            if any(img_file.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".bmp"]):
+                base_name = os.path.splitext(img_file)[0]
+                ext = os.path.splitext(img_file)[1]
+                image_extensions[base_name] = ext
+        
+        # 创建训练集列表文件
+        with open(os.path.join(output_yolo_path, "train.txt"), "w") as f:
+            for name in train_set:
+                ext = image_extensions.get(name, ".jpg")
+                f.write(f"./images/{name}{ext}\n")
+        
+        # 创建验证集列表文件
+        with open(os.path.join(output_yolo_path, "val.txt"), "w") as f:
+            for name in val_set:
+                ext = image_extensions.get(name, ".jpg")
+                f.write(f"./images/{name}{ext}\n")
+        
+        # 打包为ZIP文件
+        if zip_output_path:
+            output_zip_path = zip_output_path
+        else:
+            output_zip_path = os.path.join(os.path.dirname(output_yolo_path), f"yolo_dataset_{str(uuid.uuid4())[:8]}.zip")
+        
+        with zipfile.ZipFile(output_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for root, dirs, files in os.walk(output_yolo_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, os.path.dirname(output_yolo_path))
+                    zipf.write(file_path, arcname)
+        
+        print(f"YOLO数据集已创建并打包为: {output_zip_path}")
+        print(f"YOLO数据集ZIP文件大小: {os.path.getsize(output_zip_path) / (1024*1024):.2f} MB")
+        return output_zip_path
+    
+    except Exception as e:
+        print(f"转换VOC到YOLO数据集时出错: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return None
 
 # 主函数修改部分，所有bbox渲染到同一个视频中
@@ -447,9 +761,108 @@ def main(args):
                 
                 if merged_dataset_zip_path:
                     print(f"合并数据集ZIP文件已创建在: {merged_dataset_zip_path}")
+                    # 打印ZIP文件内容
+                    print_zip_contents(merged_dataset_zip_path)
             else:
                 print("警告: 数据集合并失败，将使用原始数据集ZIP文件")
         
+        # 添加VOC到YOLO的转换功能
+        yolo_dataset_zip_path = None
+        if args.convert_to_yolo and args.generate_dataset and merged_dataset_zip_path:
+            print("\n开始将VOC数据集转换为YOLO格式...")
+            
+            # 设置YOLO输出目录
+            yolo_output_dir = args.yolo_output_dir if args.yolo_output_dir else os.path.join(args.output_dir, "yolo_output")
+            os.makedirs(yolo_output_dir, exist_ok=True)
+            
+            # 设置YOLO ZIP输出路径
+            if args.yolo_zip_output:
+                yolo_zip_output = args.yolo_zip_output
+            else:
+                yolo_zip_dir = os.path.dirname(args.output_dir)
+                yolo_zip_name = f"yolo_dataset_{base_random_uuid}.zip"
+                yolo_zip_output = os.path.join(yolo_zip_dir, yolo_zip_name)
+            
+            # 先解压合并后的VOC数据集到临时目录
+            temp_merged_dir = os.path.join(args.output_dir, "temp_merged")
+            os.makedirs(temp_merged_dir, exist_ok=True)
+            
+            try:
+                # 检查合并后的ZIP文件是否存在
+                if not os.path.exists(merged_dataset_zip_path):
+                    print(f"错误：合并数据集ZIP文件不存在: {merged_dataset_zip_path}")
+                    yolo_dataset_zip_path = None
+                else:
+                    print(f"解压合并数据集ZIP文件: {merged_dataset_zip_path}")
+                    print(f"ZIP文件大小: {os.path.getsize(merged_dataset_zip_path) / (1024*1024):.2f} MB")
+                    
+                    # 使用zipfile查看ZIP文件的内容结构
+                    print(f"合并数据集ZIP文件内容:")
+                    with zipfile.ZipFile(merged_dataset_zip_path, 'r') as zipf:
+                        for file_info in zipf.infolist():
+                            print(f"  {file_info.filename} - {file_info.file_size} bytes")
+                        
+                        # 解压文件
+                        print(f"正在解压文件到 {temp_merged_dir}...")
+                        zipf.extractall(temp_merged_dir)
+                    
+                    # 打印解压后的目录结构
+                    print("解压后的目录结构:")
+                    print_directory_structure(temp_merged_dir)
+                    
+                    # 递归查找解压后目录中的XML文件
+                    xml_files = find_files_recursive(temp_merged_dir, '.xml')
+                    print(f"在解压目录中找到 {len(xml_files)} 个XML文件")
+                    
+                    if not xml_files:
+                        print(f"警告: 在解压后的目录中未找到任何XML文件，可能是文件结构问题")
+                        
+                        # 尝试使用替代方法：直接使用合并路径而不是解压的临时目录
+                        print(f"尝试使用合并数据集目录而不是解压的ZIP: {merged_path}")
+                        if os.path.exists(merged_path):
+                            print(f"使用 {merged_path} 代替解压的临时目录")
+                            # 打印合并数据集目录结构
+                            print("合并数据集目录结构:")
+                            print_directory_structure(merged_path)
+                            
+                            # 递归查找合并目录中的XML文件
+                            xml_files_in_merged = find_files_recursive(merged_path, '.xml')
+                            print(f"在合并目录中找到 {len(xml_files_in_merged)} 个XML文件")
+                            
+                            if xml_files_in_merged:
+                                print("使用合并数据集目录进行转换")
+                                yolo_dataset_zip_path = convert_voc_to_yolo(
+                                    merged_path, 
+                                    yolo_output_dir,
+                                    yolo_zip_output
+                                )
+                            else:
+                                print("在合并数据集目录中也未找到XML文件，无法转换")
+                        else:
+                            print(f"合并数据集目录不存在: {merged_path}")
+                    else:
+                        # 调用转换函数
+                        yolo_dataset_zip_path = convert_voc_to_yolo(
+                            temp_merged_dir, 
+                            yolo_output_dir,
+                            yolo_zip_output
+                        )
+                    
+                    if yolo_dataset_zip_path:
+                        print(f"YOLO格式数据集ZIP文件已创建在: {yolo_dataset_zip_path}")
+                    else:
+                        print("转换失败，未能创建YOLO格式数据集")
+                
+            except Exception as e:
+                print(f"转换VOC到YOLO格式时出错: {str(e)}")
+                import traceback
+                traceback.print_exc()
+            finally:
+                # 清理临时目录
+                if os.path.exists(temp_merged_dir):
+                    shutil.rmtree(temp_merged_dir)
+                    print(f"已删除临时目录: {temp_merged_dir}")
+                    
         # 生成最终的视频，包含所有bbox
         if args.save_to_video or args.upload_to_r2:
             print(f"开始生成最终视频，包含所有 {len(bbox_params_list)} 个边界框...")
@@ -522,12 +935,16 @@ def main(args):
             files_to_upload['final_video'] = web_video_path
         
         # 添加数据集ZIP到上传列表
-        # 如果启用了数据集合并并且合并成功，则仅上传合并后的数据集，否则上传所有数据集的打包文件
         if args.upload_to_r2:
             if args.merge_datasets and merged_dataset_zip_path:
-                # 仅上传合并后的数据集
-                files_to_upload['dataset'] = merged_dataset_zip_path
-                print("仅上传合并后的数据集到R2")
+                # 上传合并后的VOC数据集
+                files_to_upload['voc_dataset'] = merged_dataset_zip_path
+                print("添加合并后的VOC数据集到上传列表")
+                
+                # 如果已经转换为YOLO格式，也上传YOLO数据集
+                if args.convert_to_yolo and yolo_dataset_zip_path:
+                    files_to_upload['yolo_dataset'] = yolo_dataset_zip_path
+                    print("添加YOLO格式数据集到上传列表")
             elif all_datasets_zip_path:
                 # 上传所有数据集的打包文件（合并失败或未启用合并功能）
                 files_to_upload['dataset'] = all_datasets_zip_path
@@ -547,20 +964,27 @@ def main(args):
         
         # 添加数据集路径到结果
         if args.merge_datasets and merged_dataset_zip_path:
-            final_result["merged_dataset_zip_path"] = merged_dataset_zip_path
+            final_result["merged_voc_dataset_zip_path"] = merged_dataset_zip_path
         elif all_datasets_zip_path:
             final_result["all_datasets_zip_path"] = all_datasets_zip_path
+        
+        # 添加YOLO数据集路径到结果
+        if args.convert_to_yolo and yolo_dataset_zip_path:
+            final_result["yolo_dataset_zip_path"] = yolo_dataset_zip_path
         
         # 添加R2链接到结果
         if urls:
             final_result["upload_urls"] = urls
             
-            # 添加数据集下载链接
-            if 'dataset' in urls:
-                if args.merge_datasets:
-                    final_result["merged_dataset_download_url"] = urls['dataset']
-                else:
-                    final_result["dataset_download_url"] = urls['dataset']
+            # 添加VOC数据集下载链接
+            if 'voc_dataset' in urls:
+                final_result["voc_dataset_download_url"] = urls['voc_dataset']
+            elif 'dataset' in urls:
+                final_result["dataset_download_url"] = urls['dataset']
+                
+            # 添加YOLO数据集下载链接
+            if 'yolo_dataset' in urls:
+                final_result["yolo_dataset_download_url"] = urls['yolo_dataset']
                 
             # 添加视频下载链接
             if 'final_video' in urls:
@@ -602,6 +1026,11 @@ if __name__ == "__main__":
     parser.add_argument("--merged_tag", default="merged", help="合并数据集的自定义标签")
     parser.add_argument("--merged_output_dir", default=None, help="合并数据集的输出目录，默认使用output_dir")
     parser.add_argument("--merged_zip_output", default=None, help="合并数据集的ZIP输出路径")
+    
+    # 添加VOC到YOLO转换相关参数
+    parser.add_argument("--convert_to_yolo", action="store_true", help="将合并后的VOC数据集转换为YOLO格式")
+    parser.add_argument("--yolo_output_dir", default=None, help="YOLO数据集的输出目录")
+    parser.add_argument("--yolo_zip_output", default=None, help="YOLO数据集的ZIP输出路径")
     
     args = parser.parse_args()
     

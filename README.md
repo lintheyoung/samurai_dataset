@@ -206,3 +206,6 @@ cd ..
 
 实际使用命令
 python scripts/demo.py --video_path demo003.mp4 --txt_path box003.txt --generate_dataset --object_name "car"
+
+
+(py10) root@autodl-container-76db429c66-9cb44390:~/samurai# python scripts/demo2.py --video https://pub-6c1e280a27614b05891bfd818585735e.r2.dev/test_video.mp4 --txt "210,90,51,98;78,85,64,105" --generate_dataset --object_name "apple,apple" --video_output_path output_video.mp4 --upload_to_r2 --preprocess_video --resolution 720P --target_fps 10 --merge_datasets --convert_to_yolo
