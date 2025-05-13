@@ -177,7 +177,7 @@ def create_multiple_files_zip(files_dict, output_path):
         print(f"创建ZIP文件时出错: {str(e)}")
         return None
 
-# 主函数修改部分，支持多个bbox和对应的object_name
+# 主函数修改部分，所有bbox渲染到同一个视频中
 def main(args):
     # 如果提供了视频URL，下载视频
     if args.video.startswith("http"):
@@ -262,75 +262,75 @@ def main(args):
             
             height, width = loaded_frames[0].shape[:2]
         
-        # 初始化结果列表，用于存储每个bbox的处理结果
-        results = []
-        video_paths = []
-        dataset_paths = []
-        
-        # 为每个bbox创建随机的输出文件名
+        # 创建随机的输出文件名
         base_random_uuid = str(uuid.uuid4())[:8]
+        
+        # 创建最终视频的输出路径
+        final_video_output_path = args.video_output_path
+        
+        # 设置视频输出
+        if args.save_to_video or args.upload_to_r2:
+            # 尝试多种不同的编码器
+            codecs_to_try = [
+                ('mp4v', 'MPEG-4 编码器'),
+                ('XVID', 'XVID 编码器'),
+                ('MJPG', 'Motion JPEG 编码器'),
+                ('H264', 'H.264 编码器')
+            ]
+            
+            out = None
+            for codec, codec_name in codecs_to_try:
+                try:
+                    fourcc = cv2.VideoWriter_fourcc(*codec)
+                    out = cv2.VideoWriter(final_video_output_path, fourcc, frame_rate, (width, height))
+                    
+                    if out.isOpened():
+                        print(f"成功使用 {codec_name} 创建视频输出")
+                        break
+                    else:
+                        out.release()
+                        print(f"无法使用 {codec_name} 创建视频")
+                except Exception as e:
+                    print(f"尝试使用 {codec_name} 时出错: {str(e)}")
+            
+            if out is None or not out.isOpened():
+                print("警告: 无法创建视频输出，尝试使用最基本的编码器")
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 最基本的编码器
+                out = cv2.VideoWriter(final_video_output_path, fourcc, frame_rate, (width, height))
+                
+                if not out.isOpened():
+                    raise ValueError("无法创建视频输出，请检查OpenCV安装和编码器支持")
+        
+        # 初始化数据集目录
+        dataset_dirs = []
+        
+        # 准备frames_or_path，使SAM2能处理视频
+        frames_or_path = prepare_frames_or_path(video_path)
         
         # 加载模型（只需要加载一次）
         model_cfg = determine_model_cfg(args.model_path)
         predictor = build_sam2_video_predictor(model_cfg, args.model_path, device="cuda:0")
         
-        # 为每个边界框单独处理
+        # 创建一个数据结构来存储每一帧的所有bbox处理结果
+        frame_results = [[] for _ in range(len(loaded_frames))]
+        
+        # 为每个边界框单独处理，但不单独创建视频
         for bbox_idx, (bbox_params, object_name) in enumerate(zip(bbox_params_list, object_names_list)):
             print(f"\n处理边界框 #{bbox_idx+1}/{len(bbox_params_list)}: {bbox_params} (对象: {object_name})")
             
             # 清理对象名称，确保文件名安全
             safe_object_name = re.sub(r'[^\w\-_]', '_', object_name)
             
-            # 为当前bbox创建特定的输出目录
+            # 为当前bbox创建特定的输出目录（用于数据集生成）
             current_output_dir = os.path.join(args.output_dir, f"bbox_{bbox_idx+1}_{safe_object_name}")
             os.makedirs(current_output_dir, exist_ok=True)
-            
-            # 创建当前bbox的输出视频路径
-            current_video_uuid = f"{base_random_uuid}_{bbox_idx+1}_{safe_object_name}"
-            current_video_output_path = os.path.join(os.path.dirname(args.video_output_path), 
-                                             f"{os.path.splitext(os.path.basename(args.video_output_path))[0]}_{current_video_uuid}.mp4")
+            dataset_dirs.append(current_output_dir)
             
             # 保存视频设置
             save_video_settings(current_output_dir, width, height, frame_rate, len(loaded_frames))
             
             # 使用当前边界框参数创建提示
             prompts = create_prompt_from_params(bbox_params)
-            
-            # 设置视频输出
-            if args.save_to_video or args.upload_to_r2:
-                # 尝试多种不同的编码器
-                codecs_to_try = [
-                    ('mp4v', 'MPEG-4 编码器'),
-                    ('XVID', 'XVID 编码器'),
-                    ('MJPG', 'Motion JPEG 编码器'),
-                    ('H264', 'H.264 编码器')
-                ]
-                
-                out = None
-                for codec, codec_name in codecs_to_try:
-                    try:
-                        fourcc = cv2.VideoWriter_fourcc(*codec)
-                        out = cv2.VideoWriter(current_video_output_path, fourcc, frame_rate, (width, height))
-                        
-                        if out.isOpened():
-                            print(f"成功使用 {codec_name} 创建视频输出")
-                            break
-                        else:
-                            out.release()
-                            print(f"无法使用 {codec_name} 创建视频")
-                    except Exception as e:
-                        print(f"尝试使用 {codec_name} 时出错: {str(e)}")
-                
-                if out is None or not out.isOpened():
-                    print("警告: 无法创建视频输出，尝试使用最基本的编码器")
-                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 最基本的编码器
-                    out = cv2.VideoWriter(current_video_output_path, fourcc, frame_rate, (width, height))
-                    
-                    if not out.isOpened():
-                        raise ValueError("无法创建视频输出，请检查OpenCV安装和编码器支持")
-            
-            # 重新准备frames_or_path，使SAM2能处理视频
-            frames_or_path = prepare_frames_or_path(video_path)
             
             with torch.inference_mode(), torch.autocast("cuda", dtype=torch.float16):
                 state = predictor.init_state(frames_or_path, offload_video_to_cpu=True)
@@ -348,12 +348,12 @@ def main(args):
                         mask = mask > 0.0
                         non_zero_indices = np.argwhere(mask)
                         
-                        # 关键修改：只有在有非零像素时才添加边界框和掩码
+                        # 只有在有非零像素时才添加边界框和掩码
                         if len(non_zero_indices) > 0:  # 只在有物体时处理
                             y_min, x_min = non_zero_indices.min(axis=0).tolist()
                             y_max, x_max = non_zero_indices.max(axis=0).tolist()
-                            bbox = [x_min, y_min, x_max - x_min, y_max - y_min]
-                            bbox_to_vis[obj_id] = bbox
+                            box = [x_min, y_min, x_max - x_min, y_max - y_min]
+                            bbox_to_vis[obj_id] = box
                             mask_to_vis[obj_id] = mask
                     
                     # 获取当前帧
@@ -372,94 +372,103 @@ def main(args):
                             object_name=object_name  # 使用对应的对象名称
                         )
                     
-                    # 可视化处理
-                    if args.save_to_video or args.upload_to_r2:
-                        vis_img = img.copy()
-                        # 绘制掩码
-                        for obj_id, mask in mask_to_vis.items():
-                            mask_img = np.zeros((height, width, 3), np.uint8)
-                            mask_img[mask] = color[(obj_id + bbox_idx) % len(color)]  # 为不同的bbox使用不同的颜色
-                            vis_img = cv2.addWeighted(vis_img, 1, mask_img, 0.2, 0)
-                        
-                        # 绘制边界框
-                        for obj_id, bbox in bbox_to_vis.items():
-                            cv2.rectangle(vis_img, (bbox[0], bbox[1]), (bbox[0] + bbox[2], bbox[1] + bbox[3]), 
-                                         color[(obj_id + bbox_idx) % len(color)], 2)  # 为不同的bbox使用不同的颜色
-                            
-                            # 添加对象名称标签
-                            label_position = (bbox[0], bbox[1] - 10 if bbox[1] > 20 else bbox[1] + bbox[3] + 10)
-                            cv2.putText(vis_img, object_name, label_position, 
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color[(obj_id + bbox_idx) % len(color)], 2)
-                        
-                        out.write(vis_img)
-                
-                # 关闭视频输出
-                if args.save_to_video or args.upload_to_r2:
-                    out.release()
+                    # 存储当前帧的边界框、掩码和对象名称信息
+                    if bbox_to_vis:
+                        frame_results[frame_idx].append({
+                            'bbox_idx': bbox_idx,
+                            'object_name': object_name,
+                            'bboxes': bbox_to_vis,
+                            'masks': mask_to_vis,
+                            'color_idx': bbox_idx % len(color)  # 为每个边界框使用不同的颜色
+                        })
             
-            # 创建数据集ZIP文件
-            current_zip_path = None
-            if args.generate_dataset:
-                current_zip_output_path = None
-                if args.zip_output_path:
-                    # 如果指定了zip输出路径，为每个bbox创建唯一的zip名称
-                    zip_dir = os.path.dirname(args.zip_output_path)
-                    zip_base = os.path.splitext(os.path.basename(args.zip_output_path))[0]
-                    zip_ext = os.path.splitext(args.zip_output_path)[1]
-                    current_zip_output_path = os.path.join(zip_dir, f"{zip_base}_{safe_object_name}_{bbox_idx+1}{zip_ext}")
-                
-                current_zip_path = create_dataset_zip(
-                    current_output_dir, 
-                    object_name,  # 使用当前对象名称
-                    current_zip_output_path
-                )
-                print(f"边界框 #{bbox_idx+1} ({object_name}) 的数据集ZIP文件已创建在: {current_zip_path}")
-                dataset_paths.append(current_zip_path)
-            
-            # 保存结果
-            bbox_result = {
-                "bbox_index": bbox_idx + 1,
-                "bbox_params": bbox_params,
-                "object_name": object_name,
-                "video_output_path": current_video_output_path if args.save_to_video or args.upload_to_r2 else None,
-                "dataset_zip_path": current_zip_path if args.generate_dataset else None
-            }
-            results.append(bbox_result)
-            
-            if current_video_output_path and os.path.exists(current_video_output_path):
-                video_paths.append(current_video_output_path)
+            gc.collect()
+            torch.cuda.empty_cache()
         
-        # 清理资源
+        # 清理SAM2模型资源
         del predictor, state
         gc.collect()
         torch.clear_autocast_cache()
         torch.cuda.empty_cache()
         
-        # 准备上传文件
-        files_to_upload = {}
+        # 创建数据集ZIP文件列表
+        dataset_zip_paths = []
         
-        # 创建所有视频的合并ZIP
-        all_videos_zip_path = None
-        if video_paths and (args.save_to_video or args.upload_to_r2):
-            all_videos_zip_dir = os.path.dirname(args.video_output_path)
-            all_videos_zip_name = f"all_videos_{base_random_uuid}.zip"
-            all_videos_zip_path = os.path.join(all_videos_zip_dir, all_videos_zip_name)
+        # 为每个bbox生成数据集ZIP文件
+        if args.generate_dataset:
+            for bbox_idx, (output_dir, object_name) in enumerate(zip(dataset_dirs, object_names_list)):
+                # 清理对象名称，确保文件名安全
+                safe_object_name = re.sub(r'[^\w\-_]', '_', object_name)
+                
+                # 如果指定了zip输出路径，为每个bbox创建唯一的zip名称
+                zip_output_path = None
+                if args.zip_output_path:
+                    zip_dir = os.path.dirname(args.zip_output_path)
+                    zip_base = os.path.splitext(os.path.basename(args.zip_output_path))[0]
+                    zip_ext = os.path.splitext(args.zip_output_path)[1]
+                    zip_output_path = os.path.join(zip_dir, f"{zip_base}_{safe_object_name}_{bbox_idx+1}{zip_ext}")
+                
+                # 创建数据集ZIP文件
+                current_zip_path = create_dataset_zip(
+                    output_dir, 
+                    object_name,
+                    zip_output_path
+                )
+                
+                if current_zip_path:
+                    print(f"边界框 #{bbox_idx+1} ({object_name}) 的数据集ZIP文件已创建在: {current_zip_path}")
+                    dataset_zip_paths.append(current_zip_path)
+        
+        # 生成最终的视频，包含所有bbox
+        if args.save_to_video or args.upload_to_r2:
+            print(f"开始生成最终视频，包含所有 {len(bbox_params_list)} 个边界框...")
             
-            # 创建要打包的文件字典
-            video_files_dict = {
-                f"video_{object_names_list[idx]}_{idx+1}.mp4": path 
-                for idx, path in enumerate(video_paths)
-            }
+            for frame_idx, frame_result in enumerate(frame_results):
+                if frame_idx % 100 == 0:
+                    print(f"处理帧 {frame_idx}/{len(frame_results)}...")
+                
+                # 获取原始帧
+                original_frame = loaded_frames[frame_idx].copy()
+                
+                # 如果当前帧没有检测到任何bbox，直接写入原始帧
+                if not frame_result:
+                    out.write(original_frame)
+                    continue
+                
+                # 渲染所有bbox到当前帧
+                for result in frame_result:
+                    bbox_idx = result['bbox_idx']
+                    object_name = result['object_name']
+                    bboxes = result['bboxes']
+                    masks = result['masks']
+                    color_idx = result['color_idx']
+                    
+                    # 绘制掩码
+                    for obj_id, mask in masks.items():
+                        mask_img = np.zeros((height, width, 3), np.uint8)
+                        mask_img[mask] = color[color_idx]
+                        original_frame = cv2.addWeighted(original_frame, 1, mask_img, 0.2, 0)
+                    
+                    # 绘制边界框
+                    for obj_id, bbox in bboxes.items():
+                        cv2.rectangle(original_frame, (bbox[0], bbox[1]), (bbox[0] + bbox[2], bbox[1] + bbox[3]), 
+                                    color[color_idx], 2)
+                        
+                        # 添加对象名称标签
+                        label_position = (bbox[0], bbox[1] - 10 if bbox[1] > 20 else bbox[1] + bbox[3] + 10)
+                        cv2.putText(original_frame, object_name, label_position, 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color[color_idx], 2)
+                
+                # 将当前帧写入视频
+                out.write(original_frame)
             
-            all_videos_zip_path = create_multiple_files_zip(video_files_dict, all_videos_zip_path)
-            print(f"所有视频的合并ZIP文件已创建在: {all_videos_zip_path}")
-            
-            if args.upload_to_r2:
-                files_to_upload['all_videos'] = all_videos_zip_path
+            # 关闭视频输出
+            out.release()
+            print(f"最终视频已生成: {final_video_output_path}")
         
         # 创建所有数据集的合并ZIP
         all_datasets_zip_path = None
-        if dataset_paths and args.generate_dataset:
+        if dataset_zip_paths and args.generate_dataset:
             all_datasets_zip_dir = os.path.dirname(args.output_dir)
             all_datasets_zip_name = f"all_datasets_{base_random_uuid}.zip"
             all_datasets_zip_path = os.path.join(all_datasets_zip_dir, all_datasets_zip_name)
@@ -467,22 +476,23 @@ def main(args):
             # 创建要打包的文件字典
             dataset_files_dict = {
                 f"dataset_{object_names_list[idx]}_{idx+1}.zip": path 
-                for idx, path in enumerate(dataset_paths)
+                for idx, path in enumerate(dataset_zip_paths)
             }
             
             all_datasets_zip_path = create_multiple_files_zip(dataset_files_dict, all_datasets_zip_path)
             print(f"所有数据集的合并ZIP文件已创建在: {all_datasets_zip_path}")
-            
-            if args.upload_to_r2:
-                files_to_upload['all_datasets'] = all_datasets_zip_path
         
-        # 单独上传各个视频，用于直接观看
-        if args.upload_to_r2:
-            for idx, video_path in enumerate(video_paths):
-                if os.path.exists(video_path):
-                    # 尝试转换视频为Web兼容格式
-                    web_video_path = convert_video_for_web(video_path)
-                    files_to_upload[f'video_{object_names_list[idx]}_{idx+1}'] = web_video_path
+        # 准备上传文件
+        files_to_upload = {}
+        
+        # 转换最终视频为Web兼容格式并准备上传
+        if args.upload_to_r2 and os.path.exists(final_video_output_path):
+            web_video_path = convert_video_for_web(final_video_output_path)
+            files_to_upload['final_video'] = web_video_path
+        
+        # 添加数据集ZIP到上传列表
+        if args.upload_to_r2 and all_datasets_zip_path:
+            files_to_upload['all_datasets'] = all_datasets_zip_path
         
         # 并行上传文件到R2
         urls = {}
@@ -492,16 +502,10 @@ def main(args):
         
         # 最终结果
         final_result = {
-            "message": f"成功处理了 {len(bbox_params_list)} 个边界框",
-            "bbox_results": results,
+            "message": f"成功处理了 {len(bbox_params_list)} 个边界框并生成了包含所有边界框的单个视频",
+            "video_output_path": final_video_output_path if args.save_to_video or args.upload_to_r2 else None,
+            "all_datasets_zip_path": all_datasets_zip_path
         }
-        
-        # 添加合并ZIP的路径
-        if all_videos_zip_path:
-            final_result["all_videos_zip_path"] = all_videos_zip_path
-        
-        if all_datasets_zip_path:
-            final_result["all_datasets_zip_path"] = all_datasets_zip_path
         
         # 添加R2链接到结果
         if urls:
@@ -510,8 +514,8 @@ def main(args):
             # 为了兼容原有代码，添加以下字段
             if 'all_datasets' in urls:
                 final_result["dataset_download_url"] = urls['all_datasets']
-            if 'all_videos' in urls:
-                final_result["video_download_url"] = urls['all_videos']
+            if 'final_video' in urls:
+                final_result["video_download_url"] = urls['final_video']
         
         print("最终结果:", json.dumps(final_result, indent=2))
         return final_result
@@ -534,7 +538,7 @@ if __name__ == "__main__":
     parser.add_argument("--generate_dataset", action="store_true", help="生成VOC格式数据集。")
     parser.add_argument("--output_dir", default="output", help="保存数据集文件的目录。")
     parser.add_argument("--zip_output_path", default=None, help="输出ZIP文件的保存路径。")
-    parser.add_argument("--object_name", default="object", help="要标注的对象名称。")
+    parser.add_argument("--object_name", default="object", help="要标注的对象名称。多个对象名称用逗号分隔，例如: 'car,person,dog'")
     # 添加R2上传相关参数
     parser.add_argument("--upload_to_r2", action="store_true", help="将ZIP文件和视频上传到Cloudflare R2。")
     
