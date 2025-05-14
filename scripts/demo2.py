@@ -816,15 +816,41 @@ def main(args):
                     
         # 合并数据集（如果启用）
         merged_dataset_zip_path = None
-        if args.merge_datasets and args.generate_dataset and len(dataset_dirs) > 1:
-            print("\n开始合并数据集...")
+        if args.merge_datasets and args.generate_dataset:
+            print("\n开始处理数据集...")
             
             # 设置合并数据集的输出目录
             merged_output_dir = args.merged_output_dir if args.merged_output_dir else os.path.join(args.output_dir, "merged_output")
             os.makedirs(merged_output_dir, exist_ok=True)
             
-            # 合并数据集
-            merged_path = merge_voc_datasets(args.output_dir, args.merged_tag, merged_output_dir)
+            # 根据数据集数量选择处理方式
+            if len(dataset_dirs) > 1:
+                # 多数据集情况 - 执行合并
+                print(f"合并 {len(dataset_dirs)} 个数据集...")
+                merged_path = merge_voc_datasets(args.output_dir, args.merged_tag, merged_output_dir)
+            else:
+                # 单数据集情况 - 直接复制
+                print("只有一个边界框数据集，直接复制为合并结果...")
+                merged_path = merged_output_dir
+                # 清理目标目录中的任何现有内容
+                if os.path.exists(merged_path):
+                    for item in os.listdir(merged_path):
+                        item_path = os.path.join(merged_path, item)
+                        if os.path.isdir(item_path):
+                            shutil.rmtree(item_path)
+                        else:
+                            os.remove(item_path)
+                
+                # 从单个数据集目录复制到合并目录
+                source_dir = dataset_dirs[0]
+                for item in os.listdir(source_dir):
+                    source_path = os.path.join(source_dir, item)
+                    dest_path = os.path.join(merged_path, item)
+                    if os.path.isdir(source_path):
+                        shutil.copytree(source_path, dest_path)
+                    else:
+                        shutil.copy2(source_path, dest_path)
+                print(f"已复制数据集从 {source_dir} 到 {merged_path}")
             
             if merged_path:
                 # 设置合并数据集的ZIP输出路径
@@ -843,7 +869,7 @@ def main(args):
                     # 打印ZIP文件内容
                     print_zip_contents(merged_dataset_zip_path)
             else:
-                print("警告: 数据集合并失败，将使用原始数据集ZIP文件")
+                print("警告: 数据集处理失败，将使用原始数据集ZIP文件")
         
         # 添加VOC到YOLO的转换功能
         yolo_dataset_zip_path = None
@@ -1028,6 +1054,10 @@ def main(args):
                 # 上传所有数据集的打包文件（合并失败或未启用合并功能）
                 files_to_upload['dataset'] = all_datasets_zip_path
                 print("上传所有原始数据集的打包文件到R2")
+            elif len(dataset_zip_paths) == 1:
+                # 如果只有一个数据集且未合并，直接上传它
+                files_to_upload['voc_dataset'] = dataset_zip_paths[0]
+                print("只有一个数据集，直接添加到上传列表")
         
         # 并行上传文件到R2
         urls = {}
@@ -1046,6 +1076,8 @@ def main(args):
             final_result["merged_voc_dataset_zip_path"] = merged_dataset_zip_path
         elif all_datasets_zip_path:
             final_result["all_datasets_zip_path"] = all_datasets_zip_path
+        elif len(dataset_zip_paths) == 1:
+            final_result["voc_dataset_zip_path"] = dataset_zip_paths[0]
         
         # 添加YOLO数据集路径到结果
         if args.convert_to_yolo and yolo_dataset_zip_path:
