@@ -96,6 +96,33 @@ def parse_multiple_object_names(object_names_str):
     # 使用空格分隔对象名称
     return [name.strip() for name in object_names_str.split(',')]
 
+# 新增函数：根据分辨率变化按比例调整边界框参数
+def scale_bbox_params(bbox_params_list, original_width, original_height, new_width, new_height):
+    """
+    根据分辨率变化按比例调整边界框参数
+    :param bbox_params_list: 原始边界框参数列表 [(x, y, w, h), ...]
+    :param original_width: 原始视频宽度
+    :param original_height: 原始视频高度
+    :param new_width: 新视频宽度
+    :param new_height: 新视频高度
+    :return: 调整后的边界框参数列表
+    """
+    width_ratio = new_width / original_width
+    height_ratio = new_height / original_height
+    
+    print(f"应用分辨率缩放比例 - 宽度: {width_ratio:.4f}, 高度: {height_ratio:.4f}")
+    
+    scaled_bbox_params = []
+    for x, y, w, h in bbox_params_list:
+        new_x = int(x * width_ratio)
+        new_y = int(y * height_ratio)
+        new_w = int(w * width_ratio)
+        new_h = int(h * height_ratio)
+        scaled_bbox_params.append((new_x, new_y, new_w, new_h))
+        print(f"调整边界框: 原始 ({x}, {y}, {w}, {h}) -> 新 ({new_x}, {new_y}, {new_w}, {new_h})")
+    
+    return scaled_bbox_params
+
 def create_prompt_from_params(bbox_params):
     """从边界框参数创建提示字典"""
     x, y, w, h = bbox_params
@@ -493,6 +520,44 @@ def convert_voc_to_yolo(voc_dataset_path, output_yolo_path, zip_output_path=None
         traceback.print_exc()
         return None
 
+# 获取视频分辨率的函数
+def get_video_resolution(video_path):
+    """
+    获取视频的分辨率
+    :param video_path: 视频文件路径
+    :return: (width, height) 元组，视频的宽度和高度
+    """
+    try:
+        if os.path.isdir(video_path):
+            # 如果是图像目录，获取第一个图像的大小
+            image_files = []
+            for ext in ['.jpg', '.jpeg', '.png', '.bmp', '.JPG', '.JPEG', '.PNG', '.BMP']:
+                image_files.extend([f for f in os.listdir(video_path) if f.endswith(ext)])
+            
+            if not image_files:
+                raise ValueError(f"目录 {video_path} 中没有找到图像文件")
+            
+            first_image_path = os.path.join(video_path, sorted(image_files)[0])
+            img = cv2.imread(first_image_path)
+            if img is None:
+                raise ValueError(f"无法读取图像 {first_image_path}")
+            
+            height, width = img.shape[:2]
+        else:
+            # 如果是视频文件
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                raise ValueError(f"无法打开视频 {video_path}")
+            
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap.release()
+        
+        return width, height
+    except Exception as e:
+        print(f"获取视频分辨率时出错: {str(e)}")
+        raise
+
 # 主函数修改部分，所有bbox渲染到同一个视频中
 def main(args):
     # 如果提供了视频URL，下载视频
@@ -533,6 +598,10 @@ def main(args):
         for i, (bbox, obj_name) in enumerate(zip(bbox_params_list, object_names_list)):
             print(f"边界框 #{i+1}: {bbox} -> 对象名称: '{obj_name}'")
         
+        # 在预处理视频前获取原始分辨率
+        original_width, original_height = get_video_resolution(video_path)
+        print(f"原始视频分辨率: {original_width}x{original_height}")
+        
         # 如果启用了视频预处理
         if args.preprocess_video:
             print(f"开始预处理视频: 将分辨率降至{args.resolution}, 目标帧率: {args.target_fps if args.target_fps else '保持原帧率'}, 抽帧间隔: {args.frame_skip}")
@@ -546,7 +615,7 @@ def main(args):
             preprocessed_video_path = os.path.join(preprocessed_video_dir, f"preprocessed_{random_uuid}.mp4")
             
             # 调用预处理函数
-            video_path, frame_rate, width, height = process_video(
+            video_path, frame_rate, new_width, new_height = process_video(
                 input_video_path=video_path,
                 output_video_path=preprocessed_video_path,
                 resolution=args.resolution,
@@ -554,6 +623,16 @@ def main(args):
                 frame_skip=args.frame_skip
             )
             print(f"视频预处理完成，保存到: {video_path}")
+            print(f"新视频分辨率: {new_width}x{new_height}")
+            
+            # 根据分辨率变化按比例调整边界框参数
+            bbox_params_list = scale_bbox_params(
+                bbox_params_list, 
+                original_width, 
+                original_height, 
+                new_width, 
+                new_height
+            )
         
         # 加载视频帧，只需要加载一次
         loaded_frames = []
