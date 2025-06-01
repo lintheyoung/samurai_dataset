@@ -187,8 +187,8 @@ def add_watermark(frame, watermark_text="video2tag.com"):
                    (text_x, text_y), 
                    font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
         
-        # 使用加权混合实现透明效果（0.8的不透明度）
-        alpha = 0.8  # 水印不透明度
+        # 使用加权混合实现透明效果（0.5的不透明度）
+        alpha = 0.5  # 水印不透明度
         watermarked_frame = cv2.addWeighted(frame, 1 - alpha + 0.3, watermarked_frame, alpha - 0.3, 0)
         
         return watermarked_frame
