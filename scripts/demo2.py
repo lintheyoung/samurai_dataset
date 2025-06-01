@@ -130,6 +130,73 @@ def create_prompt_from_params(bbox_params):
     prompts = {0: ((x, y, x + w, y + h), 0)}
     return prompts
 
+# 在文件开头的函数定义部分添加水印函数
+def add_watermark(frame, watermark_text="video2tag.com"):
+    """
+    在视频帧上添加水印
+    :param frame: 输入的视频帧
+    :param watermark_text: 水印文字，默认为"video2tag.com"
+    :return: 添加水印后的视频帧
+    """
+    try:
+        height, width = frame.shape[:2]
+        
+        # 根据视频分辨率动态调整字体大小和位置
+        if width >= 1920:  # 1080P及以上
+            font_scale = 0.8
+            thickness = 2
+            margin_x = 20
+            margin_y = 40
+        elif width >= 1280:  # 720P
+            font_scale = 0.6
+            thickness = 1
+            margin_x = 15
+            margin_y = 30
+        elif width >= 854:  # 480P
+            font_scale = 0.5
+            thickness = 1
+            margin_x = 12
+            margin_y = 25
+        else:  # 更小分辨率
+            font_scale = 0.4
+            thickness = 1
+            margin_x = 10
+            margin_y = 20
+        
+        # 设置字体
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        
+        # 获取文字尺寸
+        (text_width, text_height), baseline = cv2.getTextSize(watermark_text, font, font_scale, thickness)
+        
+        # 计算左下角位置
+        text_x = margin_x
+        text_y = height - margin_y
+        
+        # 创建一个副本来添加水印
+        watermarked_frame = frame.copy()
+        
+        # 先绘制阴影（黑色，稍微偏移）
+        shadow_offset = max(1, int(font_scale * 2))  # 阴影偏移量根据字体大小调整
+        cv2.putText(watermarked_frame, watermark_text, 
+                   (text_x + shadow_offset, text_y + shadow_offset), 
+                   font, font_scale, (0, 0, 0), thickness, cv2.LINE_AA)
+        
+        # 再绘制白色文字
+        cv2.putText(watermarked_frame, watermark_text, 
+                   (text_x, text_y), 
+                   font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+        
+        # 使用加权混合实现透明效果（0.8的不透明度）
+        alpha = 0.8  # 水印不透明度
+        watermarked_frame = cv2.addWeighted(frame, 1 - alpha + 0.3, watermarked_frame, alpha - 0.3, 0)
+        
+        return watermarked_frame
+    
+    except Exception as e:
+        print(f"添加水印时出错: {str(e)}")
+        return frame  # 如果出错，返回原始帧
+
 def determine_model_cfg(model_path):
     if "large" in model_path:
         return "configs/samurai/sam2.1_hiera_l.yaml"
@@ -969,6 +1036,7 @@ def main(args):
                     print(f"已删除临时目录: {temp_merged_dir}")
                     
         # 生成最终的视频，包含所有bbox
+        # 生成最终的视频，包含所有bbox
         if args.save_to_video or args.upload_to_r2:
             print(f"开始生成最终视频，包含所有 {len(bbox_params_list)} 个边界框...")
             
@@ -981,7 +1049,9 @@ def main(args):
                 
                 # 如果当前帧没有检测到任何bbox，直接写入原始帧
                 if not frame_result:
-                    out.write(original_frame)
+                    # 添加水印后写入
+                    watermarked_frame = add_watermark(original_frame)
+                    out.write(watermarked_frame)
                     continue
                 
                 # 渲染所有bbox到当前帧
@@ -989,16 +1059,16 @@ def main(args):
                     bbox_idx = result['bbox_idx']
                     object_name = result['object_name']
                     bboxes = result['bboxes']
-                    masks = result['masks']
+                    masks = result['masks']  # 虽然不再使用，但保持数据结构不变
                     color_idx = result['color_idx']
                     
-                    # 绘制掩码
-                    for obj_id, mask in masks.items():
-                        mask_img = np.zeros((height, width, 3), np.uint8)
-                        mask_img[mask] = color[color_idx]
-                        original_frame = cv2.addWeighted(original_frame, 1, mask_img, 0.2, 0)
+                    # 注释掉绘制掩码的代码 - 不再显示mask
+                    # for obj_id, mask in masks.items():
+                    #     mask_img = np.zeros((height, width, 3), np.uint8)
+                    #     mask_img[mask] = color[color_idx]
+                    #     original_frame = cv2.addWeighted(original_frame, 1, mask_img, 0.2, 0)
                     
-                    # 绘制边界框
+                    # 绘制边界框 - 保留bbox显示
                     for obj_id, bbox in bboxes.items():
                         cv2.rectangle(original_frame, (bbox[0], bbox[1]), (bbox[0] + bbox[2], bbox[1] + bbox[3]), 
                                     color[color_idx], 2)
@@ -1008,12 +1078,13 @@ def main(args):
                         cv2.putText(original_frame, object_name, label_position, 
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color[color_idx], 2)
                 
-                # 将当前帧写入视频
-                out.write(original_frame)
+                # 添加水印后写入视频
+                watermarked_frame = add_watermark(original_frame)
+                out.write(watermarked_frame)
             
             # 关闭视频输出
             out.release()
-            print(f"最终视频已生成: {final_video_output_path}")
+            print(f"最终视频已生成（包含水印）: {final_video_output_path}")
         
         # 创建所有数据集的合并ZIP (只在没有启用merge_datasets时创建)
         all_datasets_zip_path = None
